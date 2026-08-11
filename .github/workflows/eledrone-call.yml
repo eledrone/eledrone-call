@@ -1,0 +1,201 @@
+name: eledrone call
+
+# Builds Element Call from this fork, publishes it to GHCR, and promotes it to
+# production by writing the new image digest into matrix-infra.
+#
+#   pull request        -> build only, so a broken change is caught before merge
+#   push to livekit     -> build only; livekit is the trunk, not production
+#   push to main        -> build, publish, and deploy
+#   manual dispatch     -> same as the branch it is run from
+#
+# Branches mirror eledrone-web: livekit is the trunk that tracks upstream, main is
+# what is running in production. Merge livekit into main to release.
+#
+# Deploying is deliberately *not* done from here. This workflow commits the new
+# digest to matrix-infra, whose own deploy workflow then applies it, so there is
+# one path to the server and one place that talks to it. The commit is also the
+# deployment record: git log on matrix-infra says what is running, and reverting
+# that commit is the rollback.
+#
+# Note this does *not* mean the repository is unprivileged. It holds the org's
+# vault and tailscale credentials, so a workflow here could read every secret the
+# vault has, including the deploy SSH key. Treat push access to this repository as
+# comparable to push access to matrix-infra.
+#
+# Images are pinned by digest rather than a tag. A digest cannot be moved, so the
+# thing that was tested is exactly the thing that runs, and `compose up -d` pulls
+# it without needing PULL=1 - which matters because a blanket pull would also
+# upgrade Dendrite, whose migrations are one-way.
+#
+# Note the Dockerfile does not build anything: it packages ./dist into an nginx
+# image, so the web app must be built first.
+
+on:
+    pull_request:
+    push:
+        branches: [livekit, main]
+        paths-ignore:
+            - "**.md"
+            - "docs/**"
+    workflow_dispatch:
+
+concurrency:
+    group: eledrone-call-${{ github.ref }}
+    cancel-in-progress: true
+
+permissions:
+    contents: read
+
+jobs:
+    build:
+        runs-on: ubuntu-latest
+        permissions:
+            contents: read
+            packages: write # publishing to GHCR
+        outputs:
+            digest: ${{ steps.push.outputs.digest }}
+        steps:
+            - uses: actions/checkout@v4
+
+            - run: corepack enable
+
+            - uses: actions/setup-node@v4
+              with:
+                  node-version-file: .node-version
+                  cache: pnpm
+
+            # --ignore-pnpmfile matches upstream's CI: a committed pnpmfile would
+            # otherwise run during install.
+            - name: Install dependencies
+              run: pnpm install --frozen-lockfile --ignore-pnpmfile
+
+            - name: Build the web app
+              env:
+                  # Shown in the About panel. The commit identifies a build, since
+                  # this fork carries no version of its own.
+                  VITE_APP_VERSION: ${{ github.sha }}
+              run: pnpm build
+
+            - name: What was produced
+              run: ls -lh dist | head -20
+
+            # Everything below publishes, so it is skipped for pull requests and
+            # for the trunk: those runs exist to prove the build still works.
+            - name: Log in to GHCR
+              if: github.ref == 'refs/heads/main'
+              uses: docker/login-action@v3
+              with:
+                  registry: ghcr.io
+                  username: ${{ github.actor }}
+                  password: ${{ secrets.GITHUB_TOKEN }}
+
+            - name: Build and publish the image
+              id: push
+              if: github.ref == 'refs/heads/main'
+              uses: docker/build-push-action@v6
+              with:
+                  context: .
+                  push: true
+                  # The digest is what gets deployed; these tags are for humans
+                  # reading the package listing.
+                  tags: |
+                      ghcr.io/${{ github.repository }}:latest
+                      ghcr.io/${{ github.repository }}:${{ github.sha }}
+                  labels: |
+                      org.opencontainers.image.source=https://github.com/${{ github.repository }}
+                      org.opencontainers.image.revision=${{ github.sha }}
+
+    # Promote: record the new image in matrix-infra. Pushing that commit is what
+    # triggers the deploy, so nothing here talks to the server directly.
+    promote:
+        needs: build
+        if: github.ref == 'refs/heads/main'
+        runs-on: ubuntu-latest
+        env:
+            INFISICAL_URL: ${{ secrets.INFISICAL_URL }}
+            PROJECT_ID: ${{ secrets.INFISICAL_PROJECT_ID }}
+        steps:
+            # The vault listens on a tailnet address only, so this is how it is
+            # reachable at all.
+            - name: Join the tailnet
+              uses: tailscale/github-action@v3
+              with:
+                  oauth-client-id: ${{ vars.TS_OAUTH_CLIENT_ID || secrets.TS_OAUTH_CLIENT_ID }}
+                  oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+                  tags: tag:ci
+
+            # The GitHub token that can commit to matrix-infra lives in the vault
+            # with every other credential, rather than as a repository secret, so
+            # there is one place to rotate it. GITHUB_TOKEN cannot be used here for
+            # two reasons: it has no access to another repository, and a push made
+            # with it does not trigger workflows - so the deploy would never start.
+            - name: Read the matrix-infra token from the vault
+              id: vault
+              env:
+                  INFISICAL_CLIENT_ID: ${{ vars.INFISICAL_CLIENT_ID || secrets.INFISICAL_CLIENT_ID }}
+                  INFISICAL_CLIENT_SECRET: ${{ secrets.INFISICAL_CLIENT_SECRET }}
+              run: |
+                  set -euo pipefail
+                  url="${INFISICAL_URL%/}"; url="${url%/api}"
+
+                  resp=$(curl -sS -m 30 -w '\n%{http_code}' -X POST \
+                    -H 'Content-Type: application/json' \
+                    -d "$(jq -nc --arg id "$INFISICAL_CLIENT_ID" --arg sec "$INFISICAL_CLIENT_SECRET" \
+                          '{clientId:$id, clientSecret:$sec}')" \
+                    "$url/api/v1/auth/universal-auth/login")
+                  [ "$(printf '%s' "$resp" | tail -n1)" = "200" ] || { echo "vault login failed"; exit 1; }
+                  token=$(printf '%s' "$resp" | sed '$d' | jq -r '.accessToken // empty')
+                  [ -n "$token" ] || { echo "login returned no accessToken"; exit 1; }
+                  echo "::add-mask::$token"
+
+                  code=$(curl -sS -m 30 -o secrets.json -w '%{http_code}' \
+                    -H "Authorization: Bearer $token" \
+                    "$url/api/v3/secrets/raw?workspaceId=$PROJECT_ID&environment=prod&secretPath=%2F&recursive=true")
+                  [ "$code" = "200" ] || { echo "fetching secrets failed: HTTP $code"; exit 1; }
+
+                  gh_token=$(jq -r '.secrets[] | select(.secretKey == "GH_PAT_MATRIX_INFRA") | .secretValue' secrets.json)
+                  rm -f secrets.json
+                  [ -n "$gh_token" ] || { echo "GH_PAT_MATRIX_INFRA missing from the vault"; exit 1; }
+                  echo "::add-mask::$gh_token"
+                  echo "token=$gh_token" >> "$GITHUB_OUTPUT"
+
+            - name: Point element-call at the new digest and push
+              env:
+                  DIGEST: ${{ needs.build.outputs.digest }}
+                  GH_TOKEN: ${{ steps.vault.outputs.token }}
+              run: |
+                  set -euo pipefail
+                  [ -n "$DIGEST" ] || { echo "build produced no digest"; exit 1; }
+
+                  # Cloned with the token in the URL rather than via actions/checkout,
+                  # so the credential is never written to a step input.
+                  git clone --depth 1 -b main \
+                    "https://x-access-token:${GH_TOKEN}@github.com/eledrone/matrix-infra.git" infra
+                  cd infra
+
+                  file=homeserver/docker-compose.yml
+                  new="ghcr.io/eledrone/eledrone-call@${DIGEST}"
+
+                  # Rewrite only the element-call image line. Anchored on the image
+                  # name so it cannot touch dendrite, livekit, coturn or lk-jwt.
+                  sed -i -E "s#(^[[:space:]]*image:[[:space:]]*)ghcr\.io/eledrone/eledrone-call([:@][^[:space:]]*)?#\1${new}#" "$file"
+                  grep -q "$new" "$file" || { echo "image line was not updated"; grep -n eledrone-call "$file"; exit 1; }
+
+                  if git diff --quiet; then
+                    echo "digest unchanged - nothing to deploy"
+                    exit 0
+                  fi
+                  git diff --stat
+
+                  git config user.name "eledrone-call CI"
+                  git config user.email "ci@eledrone.invalid"
+                  git commit -am "deploy: element-call ${GITHUB_SHA:0:12}
+
+                  Published from eledrone-call@${GITHUB_SHA}.
+                  Revert this commit to roll back."
+                  git push
+                  echo "pushed - matrix-infra will deploy it"
+
+            - name: Scrub the checkout, which holds the token in its remote URL
+              if: always()
+              run: rm -rf infra secrets.json
