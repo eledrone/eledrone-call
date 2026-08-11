@@ -176,9 +176,10 @@ jobs:
                   file=homeserver/docker-compose.yml
                   new="ghcr.io/eledrone/eledrone-call@${DIGEST}"
 
-                  # Rewrite only the element-call image line. Anchored on the image
-                  # name so it cannot touch dendrite, livekit, coturn or lk-jwt.
-                  sed -i -E "s#(^[[:space:]]*image:[[:space:]]*)ghcr\.io/eledrone/eledrone-call([:@][^[:space:]]*)?#\1${new}#" "$file"
+                  # Rewrite only the element-call image line. Matches upstream's image
+                  # too, so the first promotion can take over from it. No other service
+                  # uses either name, so dendrite, livekit, coturn and lk-jwt are safe.
+                  sed -i -E "s#(^[[:space:]]*image:[[:space:]]*)ghcr\.io/(element-hq/element-call|eledrone/eledrone-call)([:@][^[:space:]]*)?#\1${new}#" "$file"
                   grep -q "$new" "$file" || { echo "image line was not updated"; grep -n eledrone-call "$file"; exit 1; }
 
                   if git diff --quiet; then
