@@ -11,6 +11,7 @@ import { combineLatest, map, of, switchMap } from "rxjs";
 
 import { type Behavior } from "../Behavior";
 import { createVolumeControls, type VolumeControls } from "../VolumeControls";
+import { playbackVolumeStorage } from "../PlaybackVolumeStorage";
 import {
   type BaseUserMediaInputs,
   type BaseUserMediaViewModel,
@@ -52,6 +53,7 @@ export function createRemoteUserMedia(
       sink$: scope.behavior(
         inputs.participant$.pipe(map((p) => (volume) => p?.setVolume(volume))),
       ),
+      storage: playbackVolumeStorage("user-media", inputs.userId),
     }),
     local: false,
     speaking$: scope.behavior(

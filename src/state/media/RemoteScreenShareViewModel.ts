@@ -17,6 +17,7 @@ import {
 } from "./ScreenShareViewModel";
 import { type ObservableScope } from "../ObservableScope";
 import { createVolumeControls, type VolumeControls } from "../VolumeControls";
+import { playbackVolumeStorage } from "../PlaybackVolumeStorage";
 import { observeTrackReference$ } from "../observeTrackReference";
 
 export interface RemoteScreenShareViewModel
@@ -53,6 +54,7 @@ export function createRemoteScreenShare(
           ),
         ),
       ),
+      storage: playbackVolumeStorage("screen-share", inputs.userId),
     }),
     local: false,
     videoEnabled$: scope.behavior(

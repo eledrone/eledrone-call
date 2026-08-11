@@ -5,7 +5,7 @@ SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Element-Commercial
 Please see LICENSE in the repository root for full details.
 */
 
-import { expect, onTestFinished, test, vi } from "vitest";
+import { beforeEach, expect, onTestFinished, test, vi } from "vitest";
 import {
   type LocalTrackPublication,
   LocalVideoTrack,
@@ -25,6 +25,7 @@ import {
   mockRemoteScreenShare,
 } from "../../utils/test";
 import { constant } from "../Behavior";
+import { playbackVolumes } from "../../settings/settings";
 
 global.MediaStreamTrack = class {} as unknown as {
   new (): MediaStreamTrack;
@@ -43,6 +44,9 @@ vi.mock("../../Platform", () => ({
 }));
 
 const rtcMembership = mockRtcMembership("@alice:example.org", "AAAA");
+
+// Volumes are remembered between view models, so each test starts from scratch
+beforeEach(() => playbackVolumes.setValue({}));
 
 test("control a participant's volume", () => {
   const setVolumeSpy = vi.fn();
@@ -158,6 +162,68 @@ test("control a participant's screen share volume", () => {
       g: 0.8,
     });
   });
+});
+
+test("a participant's volume survives them rejoining", () => {
+  const vm1 = mockRemoteMedia(rtcMembership, {}, mockRemoteParticipant({}));
+  vm1.adjustPlaybackVolume(0.4);
+  vm1.commitPlaybackVolume();
+
+  // The participant leaves and rejoins, which gets them a new view model and a
+  // new LiveKit participant, neither of which remembers anything themselves
+  const setVolumeSpy = vi.fn();
+  const vm2 = mockRemoteMedia(
+    rtcMembership,
+    {},
+    mockRemoteParticipant({ setVolume: setVolumeSpy }),
+  );
+  expect(vm2.playbackVolume$.value).toBe(0.4);
+  expect(setVolumeSpy).toHaveBeenLastCalledWith(0.4);
+
+  // And the volume to unmute back to is remembered along with it
+  vm2.togglePlaybackMuted();
+  const vm3 = mockRemoteMedia(rtcMembership, {}, mockRemoteParticipant({}));
+  expect(vm3.playbackMuted$.value).toBe(true);
+  vm3.togglePlaybackMuted();
+  expect(vm3.playbackVolume$.value).toBe(0.4);
+});
+
+test("a participant's screen share volume survives them rejoining", () => {
+  const vm1 = mockRemoteScreenShare(
+    rtcMembership,
+    {},
+    mockRemoteParticipant({}),
+  );
+  vm1.adjustPlaybackVolume(0.4);
+  vm1.commitPlaybackVolume();
+
+  const setVolumeSpy = vi.fn();
+  const vm2 = mockRemoteScreenShare(
+    rtcMembership,
+    {},
+    mockRemoteParticipant({ setVolume: setVolumeSpy }),
+  );
+  expect(vm2.playbackVolume$.value).toBe(0.4);
+  expect(setVolumeSpy).toHaveBeenLastCalledWith(
+    0.4,
+    Track.Source.ScreenShareAudio,
+  );
+
+  // A participant's screen share volume is theirs alone, and shouldn't affect
+  // the volume of their microphone
+  expect(
+    mockRemoteMedia(rtcMembership, {}, mockRemoteParticipant({}))
+      .playbackVolume$.value,
+  ).toBe(1);
+});
+
+test("a volume the slider is only dragged through is not remembered", () => {
+  const vm1 = mockRemoteMedia(rtcMembership, {}, mockRemoteParticipant({}));
+  // No commit: the user is still dragging when the participant drops out
+  vm1.adjustPlaybackVolume(0.4);
+
+  const vm2 = mockRemoteMedia(rtcMembership, {}, mockRemoteParticipant({}));
+  expect(vm2.playbackVolume$.value).toBe(1);
 });
 
 test("local media remembers whether it should always be shown", () => {

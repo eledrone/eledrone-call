@@ -12,6 +12,7 @@ import { PosthogAnalytics } from "../analytics/PosthogAnalytics";
 import { type Behavior } from "../state/Behavior";
 import { useBehavior } from "../useBehavior";
 import { MatrixRTCMode } from "../config/ConfigOptions";
+import { type VolumeState } from "../state/VolumeControls";
 
 export class Setting<T> {
   public constructor(
@@ -122,6 +123,16 @@ export const soundEffectVolume = new Setting<number>(
 );
 
 export const muteAllAudio = new Setting<boolean>("mute-all-audio", false);
+
+/**
+ * The volumes at which to play back other members' audio, keyed by the kind of
+ * audio and the user it belongs to. Only members whose volume has been changed
+ * from the default appear here. See `playbackVolumeStorage`.
+ */
+export const playbackVolumes = new Setting<Record<string, VolumeState>>(
+  "playback-volumes",
+  {},
+);
 
 export const alwaysShowSelf = new Setting<boolean>("always-show-self", true);
 
