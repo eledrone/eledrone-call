@@ -7,11 +7,11 @@ Please see LICENSE in the repository root for full details.
 */
 
 import { type RemoteParticipant } from "livekit-client";
-import { combineLatest, map, of, switchMap } from "rxjs";
+import { combineLatest, of, switchMap } from "rxjs";
 
 import { type Behavior } from "../Behavior";
-import { createVolumeControls, type VolumeControls } from "../VolumeControls";
-import { playbackVolumeStorage } from "../PlaybackVolumeStorage";
+import { type VolumeControls } from "../VolumeControls";
+import { createRemoteVolumeControls } from "./RemoteVolumeControls";
 import {
   type BaseUserMediaInputs,
   type BaseUserMediaViewModel,
@@ -48,12 +48,11 @@ export function createRemoteUserMedia(
 
   return {
     ...baseUserMedia,
-    ...createVolumeControls(scope, {
+    ...createRemoteVolumeControls(scope, {
+      participant$: inputs.participant$,
       pretendToBeDisconnected$,
-      sink$: scope.behavior(
-        inputs.participant$.pipe(map((p) => (volume) => p?.setVolume(volume))),
-      ),
-      storage: playbackVolumeStorage("user-media", inputs.userId),
+      kind: "user-media",
+      userId: inputs.userId,
     }),
     local: false,
     speaking$: scope.behavior(

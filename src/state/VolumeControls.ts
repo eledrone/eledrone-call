@@ -41,6 +41,17 @@ export const defaultVolumeState: VolumeState = {
 };
 
 /**
+ * The loudest that audio can be turned up to: double the volume it was sent at.
+ * Note that an HTML media element cannot play above its natural volume, so
+ * anything greater than 1 has to be produced by Web Audio — see `AudioBoost`.
+ */
+export const maxVolume = 2;
+
+function clampVolume(volume: number): number {
+  return Math.min(Math.max(volume, 0), maxVolume);
+}
+
+/**
  * A place to remember a volume, so that it survives the volume controls being
  * destroyed and created again.
  */
@@ -127,7 +138,7 @@ export function createVolumeControls(
               };
             default:
               // Volume adjustment
-              return { ...state, volume: event, settled: false };
+              return { ...state, volume: clampVolume(event), settled: false };
           }
         },
       ),

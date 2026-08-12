@@ -8,7 +8,11 @@ Please see LICENSE in the repository root for full details.
 import { beforeEach, expect, test } from "vitest";
 
 import { playbackVolumeStorage } from "./PlaybackVolumeStorage";
-import { defaultVolumeState, type VolumeState } from "./VolumeControls";
+import {
+  defaultVolumeState,
+  maxVolume,
+  type VolumeState,
+} from "./VolumeControls";
 import { playbackVolumes } from "../settings/settings";
 
 const alice = "@alice:example.org";
@@ -23,6 +27,17 @@ test("remembers a volume until it is loaded again", () => {
   expect(playbackVolumeStorage("user-media", alice).load()).toEqual({
     volume: 0.5,
     committedVolume: 0.5,
+  });
+});
+
+test("remembers a volume turned up beyond 100%", () => {
+  playbackVolumeStorage("user-media", alice).save({
+    volume: maxVolume,
+    committedVolume: maxVolume,
+  });
+  expect(playbackVolumeStorage("user-media", alice).load()).toEqual({
+    volume: maxVolume,
+    committedVolume: maxVolume,
   });
 });
 
@@ -57,7 +72,7 @@ test("falls back to the default for values that make no sense", () => {
     "loud",
     {},
     { volume: "loud", committedVolume: 1 },
-    { volume: 2, committedVolume: 1 },
+    { volume: 2.5, committedVolume: 1 },
     { volume: -1, committedVolume: 1 },
   ];
   for (const stored of nonsense) {

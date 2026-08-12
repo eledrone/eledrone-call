@@ -16,8 +16,14 @@ import {
 } from "@livekit/components-react";
 import { logger as rootLogger } from "matrix-js-sdk/lib/logger";
 
-import { useEarpieceAudioConfig } from "../MediaDevicesContext";
+import {
+  useEarpieceAudioConfig,
+  useMediaDevices,
+} from "../MediaDevicesContext";
 import { useReactiveState } from "../useReactiveState";
+import { useBehavior } from "../useBehavior";
+import { amplificationFor, audioMix$, audioMixKey } from "../state/AudioMix";
+import { getUrlParams } from "../UrlParams";
 import * as controls from "../controls";
 
 export interface MatrixAudioRendererProps {
@@ -109,6 +115,13 @@ export function LivekitRoomAudioRenderer({
   const { pan: stereoPan, volume: volumeFactor } = useEarpieceAudioConfig();
   const shouldUseAudioContext = stereoPan !== 0;
 
+  // The other reason a track may need the audio context: a media element will
+  // not play louder than the volume its audio arrived at, so a participant
+  // turned up beyond 100% needs a gain node to make up the difference. That is
+  // asked for one track at a time, because of the standby problem above — and
+  // only on browsers where it is safe at all, see `canAmplify$`.
+  const mix = useBehavior(audioMix$);
+
   // initialize the potentially used audio context.
   const [audioContext, setAudioContext] = useState<AudioContext | undefined>(
     undefined,
@@ -120,34 +133,54 @@ export function LivekitRoomAudioRenderer({
       void ctx.close();
     };
   }, []);
-  const audioNodes = useMemo(
-    () => ({
-      gain: audioContext?.createGain(),
-      pan: audioContext?.createStereoPanner(),
-    }),
-    [audioContext],
-  );
 
-  // Simple effects to update the gain and pan node based on the props
+  // Audio played through the context leaves by the context's own output rather
+  // than the media element's, so the chosen speaker has to be applied here too.
+  // Not every browser can do this; the ones that cannot play such audio on the
+  // default device.
+  const audioOutputId = useBehavior(
+    useMediaDevices().audioOutput.selected$,
+  )?.id;
+  const { controlledAudioDevices } = getUrlParams();
+  // Whether audio can be played above 100% at all depends on where it would end
+  // up coming out, so the answer is reconsidered whenever the speaker changes
+  useEffect(() => amplificationFor(audioOutputId), [audioOutputId]);
   useEffect(() => {
-    if (audioNodes.pan) audioNodes.pan.pan.value = stereoPan;
-  }, [audioNodes.pan, stereoPan]);
-  useEffect(() => {
-    if (audioNodes.gain) audioNodes.gain.gain.value = volumeFactor;
-  }, [audioNodes.gain, volumeFactor]);
+    if (audioContext && "setSinkId" in audioContext && !controlledAudioDevices)
+      // https://developer.mozilla.org/en-US/docs/Web/API/AudioContext/setSinkId
+      // @ts-expect-error - setSinkId doesn't exist yet in types, maybe because it's not supported everywhere.
+      audioContext.setSinkId(audioOutputId).catch((ex) => {
+        rootLogger.warn("Unable to change sink for audio context", ex);
+      });
+  }, [audioContext, audioOutputId, controlledAudioDevices]);
 
   return (
     // We add all audio elements into one <div> for the browser developer tool experience/tidyness.
     <div style={{ display: "none" }}>
-      {tracks.map((trackRef) => (
-        <AudioTrackWithAudioNodes
-          key={getTrackReferenceId(trackRef)}
-          trackRef={trackRef}
-          muted={muted}
-          audioContext={shouldUseAudioContext ? audioContext : undefined}
-          audioNodes={audioNodes}
-        />
-      ))}
+      {tracks.map((trackRef) => {
+        const boost =
+          mix.get(
+            audioMixKey(
+              trackRef.participant.identity,
+              trackRef.publication.source,
+            ),
+          )?.gain ?? 1;
+        return (
+          <AudioTrackWithAudioNodes
+            key={getTrackReferenceId(trackRef)}
+            trackRef={trackRef}
+            muted={muted}
+            audioContext={
+              shouldUseAudioContext || boost > 1 ? audioContext : undefined
+            }
+            // Silencing the track is normally the media element's job, but the
+            // element is bypassed whenever the context is in use, so in that
+            // case the gain has to do it
+            gain={muted ? 0 : volumeFactor * boost}
+            pan={stereoPan}
+          />
+        );
+      })}
     </div>
   );
 }
@@ -155,10 +188,15 @@ export function LivekitRoomAudioRenderer({
 interface StereoPanAudioTrackProps {
   muted?: boolean;
   audioContext?: AudioContext;
-  audioNodes: {
-    gain?: GainNode;
-    pan?: StereoPannerNode;
-  };
+  /**
+   * The gain to apply to this track, if it is routed through the audio context.
+   */
+  gain: number;
+  /**
+   * The stereo pan to apply to this track, if it is routed through the audio
+   * context.
+   */
+  pan: number;
 }
 
 /**
@@ -170,35 +208,55 @@ interface StereoPanAudioTrackProps {
  * @param props.trackRef The track reference
  * @param props.muted If the track should be muted
  * @param props.audioContext The audio context to use
- * @param props.audioNodes The audio nodes to use
+ * @param props.gain The gain to apply when using the audio context
+ * @param props.pan The stereo pan to apply when using the audio context
  * @returns
  */
 function AudioTrackWithAudioNodes({
   trackRef,
   muted,
   audioContext,
-  audioNodes,
+  gain,
+  pan,
   ...props
 }: StereoPanAudioTrackProps &
   AudioTrackProps &
   React.RefAttributes<HTMLAudioElement>): ReactNode {
+  // The nodes belong to this one track rather than being shared between all of
+  // them, because every track is turned up and down on its own.
+  const audioNodes = useMemo(
+    () =>
+      audioContext && {
+        gain: audioContext.createGain(),
+        pan: audioContext.createStereoPanner(),
+      },
+    [audioContext],
+  );
+
+  // Simple effects to update the gain and pan node based on the props
+  useEffect(() => {
+    if (audioNodes) audioNodes.pan.pan.value = pan;
+  }, [audioNodes, pan]);
+  useEffect(() => {
+    if (audioNodes) audioNodes.gain.gain.value = gain;
+  }, [audioNodes, gain]);
+
   // This is used to unmount/remount the AudioTrack component.
   // Mounting needs to happen after the audioContext is set.
   // (adding the audio context when already mounted did not work outside strict mode)
   const [trackReady, setTrackReady] = useReactiveState(
     () => false,
-    // We only want the track to reset once both (audioNodes and audioContext) are set.
-    // for unsetting the audioContext its enough if one of the two is undefined.
-    [audioContext && audioNodes],
+    // The track has to be reset whenever it starts or stops using the context.
+    [audioNodes],
   );
 
   useEffect(() => {
     if (!trackRef || trackReady) return;
     const track = trackRef.publication.track as RemoteAudioTrack;
-    const useContext = audioContext && audioNodes.gain && audioNodes.pan;
-    track.setAudioContext(useContext ? audioContext : undefined);
+    // audioNodes exists exactly when the context does
+    track.setAudioContext(audioContext);
     track.setWebAudioPlugins(
-      useContext ? [audioNodes.gain!, audioNodes.pan!] : [],
+      audioNodes ? [audioNodes.gain, audioNodes.pan] : [],
     );
     setTrackReady(true);
     controls.setPlaybackStarted();

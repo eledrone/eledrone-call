@@ -7,6 +7,7 @@ Please see LICENSE in the repository root for full details.
 
 import {
   defaultVolumeState,
+  maxVolume,
   type VolumeState,
   type VolumeStorage,
 } from "./VolumeControls";
@@ -16,10 +17,10 @@ import { playbackVolumes } from "../settings/settings";
  * The kinds of audio whose volume is remembered separately: a member's
  * microphone, and the audio of anything they are screen sharing.
  */
-type AudioKind = "user-media" | "screen-share";
+export type AudioKind = "user-media" | "screen-share";
 
 function isVolume(value: unknown): value is number {
-  return typeof value === "number" && value >= 0 && value <= 1;
+  return typeof value === "number" && value >= 0 && value <= maxVolume;
 }
 
 /**
