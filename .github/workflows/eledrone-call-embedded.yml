@@ -1,0 +1,128 @@
+name: eledrone call embedded
+
+# Builds the Element Call *widget* from this fork and publishes it as a release
+# asset, for eledrone-web to embed.
+#
+#   pull request        -> build only, so a broken change is caught before merge
+#   push to livekit     -> build only; livekit is the trunk, not production
+#   push to main        -> build and publish a release
+#   manual dispatch     -> same as the branch it is run from
+#
+# This is a different artifact from the one eledrone-call.yml produces. That is
+# the standalone server behind call.gandon.pp.ua; this is the bundle that runs
+# inside an iframe in the desktop and web apps. Same source, independent
+# lifetimes: upgrading one does not upgrade the other, and until this existed the
+# apps ran upstream's widget no matter what the server was running.
+#
+# Published as a release asset rather than to a registry. eledrone-web then
+# depends on a plain URL, which needs no token on CI or on anyone's machine, and
+# both repositories are public. Publishing to npm is not an option - the package
+# name belongs to Element - and GitHub Packages would mean an .npmrc credential
+# everywhere the app is built.
+#
+# One release per commit, rather than a tag that moves. Same reasoning as pinning
+# the server image by digest: a moving tag means the thing that was tested stops
+# being the thing that runs. Upgrading element-web is therefore a commit that
+# changes a URL, and that commit is the record of which widget it ships.
+
+on:
+    pull_request:
+    push:
+        branches: [livekit, main]
+        paths-ignore:
+            - "**.md"
+            - "docs/**"
+    workflow_dispatch:
+
+concurrency:
+    group: eledrone-call-embedded-${{ github.ref }}
+    cancel-in-progress: true
+
+permissions:
+    contents: read
+
+jobs:
+    build:
+        runs-on: ubuntu-latest
+        permissions:
+            contents: write # creating the release
+        steps:
+            - uses: actions/checkout@v4
+
+            - run: corepack enable
+
+            - uses: actions/setup-node@v4
+              with:
+                  node-version-file: .node-version
+                  cache: pnpm
+
+            # --ignore-pnpmfile matches upstream's CI: a committed pnpmfile would
+            # otherwise run during install.
+            - name: Install dependencies
+              run: pnpm install --frozen-lockfile --ignore-pnpmfile
+
+            - name: Name this build
+              id: name
+              run: |
+                  set -euo pipefail
+                  short=$(git rev-parse --short HEAD)
+                  echo "short_sha=$short" >> "$GITHUB_OUTPUT"
+                  echo "version=0.0.0-eledrone.$short" >> "$GITHUB_OUTPUT"
+                  echo "tag=embedded-$short" >> "$GITHUB_OUTPUT"
+
+            - name: Build the widget
+              env:
+                  # Element Call prints this on startup and shows it in its About
+                  # panel, so a console log says which widget is running. Worth
+                  # having: telling our build from upstream's has already cost an
+                  # afternoon once.
+                  VITE_APP_VERSION: embedded-eledrone-${{ steps.name.outputs.short_sha }}
+                  NODE_OPTIONS: --max-old-space-size=4096
+              run: pnpm build:embedded
+
+            - name: Assemble the npm package
+              env:
+                  VERSION: ${{ steps.name.outputs.version }}
+              run: |
+                  set -euo pipefail
+                  # The build writes to ./dist; embedded/web is the package that
+                  # ships it, and its `files` field expects dist/ beneath it.
+                  rm -rf embedded/web/dist
+                  cp -r dist embedded/web/dist
+                  cd embedded/web
+                  npm version "$VERSION" --no-git-tag-version
+                  npm pack
+                  ls -lh ./*.tgz
+
+            - name: Checksum
+              working-directory: embedded/web
+              run: sha256sum ./*.tgz | tee ./*.tgz.sha256
+
+            # Everything below publishes, so pull requests and the trunk stop
+            # here: those runs exist to prove the widget still builds.
+            - name: Publish the release
+              if: github.ref == 'refs/heads/main'
+              uses: softprops/action-gh-release@v2
+              with:
+                  tag_name: ${{ steps.name.outputs.tag }}
+                  name: Element Call widget ${{ steps.name.outputs.short_sha }}
+                  body: |
+                      The Element Call widget built from this fork, for eledrone-web to embed.
+
+                      Point `@element-hq/element-call-embedded` in `apps/web/package.json` at the
+                      asset below, then run `pnpm install` to update the lockfile.
+                  files: |
+                      embedded/web/*.tgz
+                      embedded/web/*.tgz.sha256
+
+            - name: Where it went
+              if: github.ref == 'refs/heads/main'
+              env:
+                  REPO: ${{ github.repository }}
+                  TAG: ${{ steps.name.outputs.tag }}
+                  VERSION: ${{ steps.name.outputs.version }}
+              run: |
+                  echo "### Widget published" >> "$GITHUB_STEP_SUMMARY"
+                  echo '```' >> "$GITHUB_STEP_SUMMARY"
+                  echo "\"@element-hq/element-call-embedded\": \"https://github.com/${REPO}/releases/download/${TAG}/element-hq-element-call-embedded-${VERSION}.tgz\"," >> "$GITHUB_STEP_SUMMARY"
+                  echo '```' >> "$GITHUB_STEP_SUMMARY"
