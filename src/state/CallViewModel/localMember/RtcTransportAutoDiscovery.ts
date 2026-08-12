@@ -41,22 +41,40 @@ export class RtcTransportAutoDiscovery {
   }
 
   public async discoverPreferredTransport(): Promise<LivekitTransportConfig | null> {
-    // 1) backend transports
-    const backendTransport = await this.tryBackendTransports();
-    if (backendTransport) {
-      this.logger.info(
-        `Found backend transport: ${backendTransport.livekit_service_url}`,
-      );
-      return backendTransport;
-    }
-
-    // 2) app config URL
+    // 1) app config URL
+    //
+    // Upstream asks the backend first and treats config as the last resort.
+    // That order is wrong for a deployment that has already been told, in its
+    // own config, exactly where the SFU is: asking is at best redundant, and
+    // here it is actively harmful.
+    //
+    // Embedded, the backend query is not an HTTP request - it is an MSC4515
+    // widget action answered by the host. eledrone's element-web ships
+    // matrix-widget-api 1.17.0, which knows nothing of MSC4515, so it grants
+    // the capability and then replies "unknown action". That error carries no
+    // httpStatus, so calculateRetryBackoff cannot tell it from a blip and
+    // retries it four times with exponential backoff. The join sits there for
+    // ~30s waiting on a question whose answer can never change, and the widget
+    // stops answering the host meanwhile - the visible symptom was a call that
+    // never connected and an io.element.device_mute that timed out.
+    //
+    // So: if we have been given a URL, use it and do not ask. Discovery is
+    // still tried when no URL is configured, which is every other deployment.
     const configTransport = this.tryConfigTransport();
     if (configTransport) {
       this.logger.info(
         `Found app config transport: ${configTransport.livekit_service_url}`,
       );
       return configTransport;
+    }
+
+    // 2) backend transports
+    const backendTransport = await this.tryBackendTransports();
+    if (backendTransport) {
+      this.logger.info(
+        `Found backend transport: ${backendTransport.livekit_service_url}`,
+      );
+      return backendTransport;
     }
 
     return null;

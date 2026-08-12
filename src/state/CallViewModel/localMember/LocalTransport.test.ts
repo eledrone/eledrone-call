@@ -203,6 +203,10 @@ describe("LocalTransport", () => {
 
     let openIdSpy: MockInstance<(typeof openIDSFU)["getSFUConfigWithOpenID"]>;
     beforeEach(() => {
+      // These tests are about which member's transport wins, so discovery has
+      // to reach the backend: a configured URL short-circuits it. Set
+      // explicitly rather than inherited from whichever test ran last.
+      mockConfig({});
       openIdSpy = vi
         .spyOn(openIDSFU, "getSFUConfigWithOpenID")
         .mockResolvedValue(openIdResponse);

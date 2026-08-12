@@ -68,25 +68,43 @@ describe("RtcTransportAutoDiscovery", () => {
     { transports: [{ type: "not_livekit" }, backendTransport] },
   ];
   it.each(VALID_TEST_CASES)(
-    "prefers backend transport other app config $transports",
+    "uses the backend transport when no app config URL is set $transports",
     async ({ transports }) => {
       const client = makeClient();
       client._unstable_getRTCTransports.mockResolvedValue(transports);
 
       const discovery = new RtcTransportAutoDiscovery({
         client,
-        resolvedConfig: makeResolvedConfig(configTransport.livekit_service_url),
+        resolvedConfig: makeResolvedConfig(undefined),
         logger: rootLogger,
       });
 
       const discoveredTransport = await discovery.discoverPreferredTransport();
 
       expect(discoveredTransport).toStrictEqual(backendTransport);
-      expect(discoveredTransport).not.toStrictEqual(configTransport);
 
       expect(client._unstable_getRTCTransports).toHaveBeenCalledTimes(1);
     },
   );
+
+  // Reversed from upstream, which asks the backend first. A configured URL is
+  // an answer we already have, so the question is never asked - see the comment
+  // on discoverPreferredTransport for why asking it is not merely redundant.
+  it("prefers app config over the backend, without asking the backend", async () => {
+    const client = makeClient();
+    client._unstable_getRTCTransports.mockResolvedValue([backendTransport]);
+
+    const discovery = new RtcTransportAutoDiscovery({
+      client,
+      resolvedConfig: makeResolvedConfig(configTransport.livekit_service_url),
+      logger: rootLogger,
+    });
+
+    const discoveredTransport = await discovery.discoverPreferredTransport();
+
+    expect(discoveredTransport).toStrictEqual(configTransport);
+    expect(client._unstable_getRTCTransports).not.toHaveBeenCalled();
+  });
 
   it("Retries limit_exceeded backend transport", async () => {
     const client = makeClient();
@@ -105,7 +123,7 @@ describe("RtcTransportAutoDiscovery", () => {
 
     const discovery = new RtcTransportAutoDiscovery({
       client,
-      resolvedConfig: makeResolvedConfig("https://config.example.org"),
+      resolvedConfig: makeResolvedConfig(undefined),
       logger: rootLogger,
     });
 
@@ -121,20 +139,18 @@ describe("RtcTransportAutoDiscovery", () => {
     { transports: [{ type: "not_livekit" }] },
   ];
   it.each(INVALID_TEST_CASES)(
-    "falls back to config when backend has no (valid) livekit transports $transports",
+    "returns null when the backend has no (valid) livekit transports and no config URL is set $transports",
     async ({ transports }) => {
       const client = makeClient();
       client._unstable_getRTCTransports.mockResolvedValue(transports);
 
       const discovery = new RtcTransportAutoDiscovery({
         client,
-        resolvedConfig: makeResolvedConfig(configTransport.livekit_service_url),
+        resolvedConfig: makeResolvedConfig(undefined),
         logger: rootLogger,
       });
 
-      const discoveredTransport = await discovery.discoverPreferredTransport();
-      expect(discoveredTransport).not.toStrictEqual(backendTransport);
-      expect(discoveredTransport).toStrictEqual(configTransport);
+      await expect(discovery.discoverPreferredTransport()).resolves.toBeNull();
     },
   );
 
