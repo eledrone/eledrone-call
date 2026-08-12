@@ -43,7 +43,9 @@ jobs:
                 }
             })
   docker_for_develop:
-    # Build docker and publish docker for livekit branch after build completes
+    # Build docker and publish docker for livekit branch after build completes.
+    # This fork does not cut releases, so `latest` is published from the trunk
+    # here rather than by publish.yaml - it is what the deployment tracks.
     if: github.ref == 'refs/heads/livekit'
     needs: build_full_element_call
     permissions:
@@ -56,6 +58,7 @@ jobs:
       artifact_run_id: ${{ github.run_id }}
       docker_tags: |
         type=sha,format=short,event=branch
+        type=raw,value=latest
         type=raw,value=latest-ci
         type=raw,value=latest-ci_{{date 'X' }}
   build_embedded_element_call:
