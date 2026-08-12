@@ -37,6 +37,9 @@ on:
         paths-ignore:
             - "**.md"
             - "docs/**"
+            # The widget pipeline is a separate artifact with its own workflow;
+            # touching it must not rebuild and redeploy the server.
+            - ".github/workflows/eledrone-call-embedded.yml"
     workflow_dispatch:
 
 concurrency:
