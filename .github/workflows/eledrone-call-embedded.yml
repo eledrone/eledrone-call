@@ -96,7 +96,14 @@ jobs:
 
             - name: Checksum
               working-directory: embedded/web
-              run: sha256sum ./*.tgz | tee ./*.tgz.sha256
+              env:
+                  VERSION: ${{ steps.name.outputs.version }}
+              run: |
+                  set -euo pipefail
+                  # Named explicitly: a `*.tgz.sha256` glob has nothing to match
+                  # yet, so it stays literal and the asset lands called "tgz.sha256".
+                  tgz="element-hq-element-call-embedded-${VERSION}.tgz"
+                  sha256sum "$tgz" | tee "${tgz}.sha256"
 
             # Everything below publishes, so pull requests and the trunk stop
             # here: those runs exist to prove the widget still builds.
