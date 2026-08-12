@@ -30,6 +30,21 @@ export default defineConfig((env) =>
                 delayed_leave_event_restart_ms: 4000,
                 delayed_leave_event_delay_ms: 18000,
               },
+              // Where the SFU is, for a homeserver that will not say.
+              //
+              // Transport discovery is: the MSC4143 transports endpoint, then
+              // this. It used to fall back to .well-known in between, which is
+              // how eledrone's calls worked at all - Dendrite answers 404 for
+              // that endpoint, and the SFU is advertised in .well-known. Upstream
+              // removed that middle step (element-hq/element-call#4153), so
+              // without this there is nowhere left to find a transport and no
+              // call ever connects.
+              //
+              // Remove this once the homeserver implements the endpoint, which
+              // is where upstream is heading.
+              livekit: {
+                livekit_service_url: "https://call.gandon.pp.ua/livekit/jwt",
+              },
             },
           },
         ]),
