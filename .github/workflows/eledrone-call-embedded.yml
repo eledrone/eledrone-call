@@ -5,7 +5,7 @@ name: eledrone call embedded
 #
 #   pull request        -> build only, so a broken change is caught before merge
 #   push to livekit     -> build only; livekit is the trunk, not production
-#   push to main        -> build and publish a release
+#   push to main        -> build, publish a release, and open a PR on eledrone-web
 #   manual dispatch     -> same as the branch it is run from
 #
 # This is a different artifact from the one eledrone-call.yml produces. That is
@@ -24,6 +24,9 @@ name: eledrone call embedded
 # the server image by digest: a moving tag means the thing that was tested stops
 # being the thing that runs. Upgrading element-web is therefore a commit that
 # changes a URL, and that commit is the record of which widget it ships.
+#
+# That commit is now written for you: see bump-eledrone-web below, which opens it
+# as a pull request. Merging it is still a decision someone makes.
 
 on:
     pull_request:
@@ -46,6 +49,10 @@ jobs:
         runs-on: ubuntu-latest
         permissions:
             contents: write # creating the release
+        outputs:
+            short_sha: ${{ steps.name.outputs.short_sha }}
+            version: ${{ steps.name.outputs.version }}
+            tag: ${{ steps.name.outputs.tag }}
         steps:
             - uses: actions/checkout@v4
 
@@ -133,3 +140,186 @@ jobs:
                   echo '```' >> "$GITHUB_STEP_SUMMARY"
                   echo "\"@element-hq/element-call-embedded\": \"https://github.com/${REPO}/releases/download/${TAG}/element-hq-element-call-embedded-${VERSION}.tgz\"," >> "$GITHUB_STEP_SUMMARY"
                   echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+    # Offer the new widget to eledrone-web as a pull request. Same shape as the
+    # promote job in eledrone-call.yml - read a token from the vault, act on
+    # another repository - except that this one opens a PR rather than pushing,
+    # so the bump goes through eledrone-web's own CI before it lands on develop.
+    #
+    # A PR rather than a direct push because the widget is the app's largest
+    # single dependency: if it breaks the call UI, that should surface on a
+    # branch, not on the trunk everyone builds from.
+    #
+    # The URL cannot simply be sed'd everywhere: pnpm-lock.yaml pins the tarball
+    # by sha512 integrity, which only pnpm can recompute. So this checks out
+    # eledrone-web, rewrites package.json, and lets `pnpm install --lockfile-only`
+    # fetch the freshly published release and write the real hash.
+    bump-eledrone-web:
+        needs: build
+        if: github.ref == 'refs/heads/main'
+        runs-on: ubuntu-latest
+        env:
+            INFISICAL_URL: ${{ secrets.INFISICAL_URL }}
+            PROJECT_ID: ${{ secrets.INFISICAL_PROJECT_ID }}
+        steps:
+            # The vault listens on a tailnet address only, so this is how it is
+            # reachable at all.
+            - name: Join the tailnet
+              uses: tailscale/github-action@v3
+              with:
+                  oauth-client-id: ${{ vars.TS_OAUTH_CLIENT_ID || secrets.TS_OAUTH_CLIENT_ID }}
+                  oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+                  tags: tag:ci
+
+            # A token of its own rather than the one promote uses: two narrow
+            # tokens mean a leak from either job reaches one repository, where a
+            # single wide one would reach both - including matrix-infra, which is
+            # the path to the server.
+            - name: Read the eledrone-web token from the vault
+              id: vault
+              env:
+                  INFISICAL_CLIENT_ID: ${{ vars.INFISICAL_CLIENT_ID || secrets.INFISICAL_CLIENT_ID }}
+                  INFISICAL_CLIENT_SECRET: ${{ secrets.INFISICAL_CLIENT_SECRET }}
+              run: |
+                  set -euo pipefail
+                  url="${INFISICAL_URL%/}"; url="${url%/api}"
+
+                  resp=$(curl -sS -m 30 -w '\n%{http_code}' -X POST \
+                    -H 'Content-Type: application/json' \
+                    -d "$(jq -nc --arg id "$INFISICAL_CLIENT_ID" --arg sec "$INFISICAL_CLIENT_SECRET" \
+                          '{clientId:$id, clientSecret:$sec}')" \
+                    "$url/api/v1/auth/universal-auth/login")
+                  [ "$(printf '%s' "$resp" | tail -n1)" = "200" ] || { echo "vault login failed"; exit 1; }
+                  token=$(printf '%s' "$resp" | sed '$d' | jq -r '.accessToken // empty')
+                  [ -n "$token" ] || { echo "login returned no accessToken"; exit 1; }
+                  echo "::add-mask::$token"
+
+                  code=$(curl -sS -m 30 -o secrets.json -w '%{http_code}' \
+                    -H "Authorization: Bearer $token" \
+                    "$url/api/v3/secrets/raw?workspaceId=$PROJECT_ID&environment=prod&secretPath=%2F&recursive=true")
+                  [ "$code" = "200" ] || { echo "fetching secrets failed: HTTP $code"; exit 1; }
+
+                  gh_token=$(jq -r '.secrets[] | select(.secretKey == "GH_PAT_ELEDRONE_WEB") | .secretValue' secrets.json)
+                  rm -f secrets.json
+                  [ -n "$gh_token" ] || { echo "GH_PAT_ELEDRONE_WEB missing from the vault"; exit 1; }
+                  echo "::add-mask::$gh_token"
+                  echo "token=$gh_token" >> "$GITHUB_OUTPUT"
+
+            # Cloned with the token in the URL rather than via actions/checkout,
+            # so the credential is never written to a step input. Full history is
+            # not needed; the PR branch starts from develop's tip.
+            - name: Clone eledrone-web
+              env:
+                  GH_TOKEN: ${{ steps.vault.outputs.token }}
+              run: |
+                  set -euo pipefail
+                  git clone --depth 1 -b develop \
+                    "https://x-access-token:${GH_TOKEN}@github.com/eledrone/eledrone-web.git" web
+
+            # eledrone-web pins its own Node version, which is not necessarily
+            # this repository's. Reading it from the checkout keeps the two from
+            # drifting into a lockfile written by the wrong version.
+            - uses: actions/setup-node@v4
+              with:
+                  node-version-file: web/.node-version
+            - run: corepack enable
+
+            - name: Point the dependency at the new widget
+              id: bump
+              env:
+                  REPO: ${{ github.repository }}
+                  TAG: ${{ needs.build.outputs.tag }}
+                  VERSION: ${{ needs.build.outputs.version }}
+              run: |
+                  set -euo pipefail
+                  cd web
+                  url="https://github.com/${REPO}/releases/download/${TAG}/element-hq-element-call-embedded-${VERSION}.tgz"
+                  echo "url=$url" >> "$GITHUB_OUTPUT"
+
+                  # The release is public, so this needs no credential - but it
+                  # has to exist before pnpm can hash it.
+                  code=$(curl -sSL -o /dev/null -w '%{http_code}' -m 60 "$url" || echo 000)
+                  [ "$code" = "200" ] || { echo "widget tarball not fetchable: HTTP $code"; exit 1; }
+
+                  file=apps/web/package.json
+                  # Rewrite only this one dependency's URL, whatever it points at
+                  # now. The lockfile is left to pnpm: it carries an integrity
+                  # hash that cannot be produced by substitution.
+                  jq --arg url "$url" \
+                    '.devDependencies["@element-hq/element-call-embedded"] = $url' \
+                    "$file" > "$file.tmp" && mv "$file.tmp" "$file"
+                  grep -q "$TAG" "$file" || { echo "dependency line was not updated"; exit 1; }
+
+                  if git diff --quiet; then
+                    echo "already on this widget - nothing to propose"
+                    echo "changed=false" >> "$GITHUB_OUTPUT"
+                    exit 0
+                  fi
+                  echo "changed=true" >> "$GITHUB_OUTPUT"
+
+            - name: Update the lockfile
+              if: steps.bump.outputs.changed == 'true'
+              working-directory: web
+              run: |
+                  set -euo pipefail
+                  pnpm install --lockfile-only --ignore-scripts
+
+                  # `--lockfile-only` refreshes whatever else has drifted, not
+                  # just this entry. A bump that quietly carries unrelated churn
+                  # is not reviewable, so stop rather than propose it.
+                  changed=$(git diff --name-only)
+                  echo "$changed"
+                  unexpected=$(echo "$changed" | grep -vE '^(apps/web/package\.json|pnpm-lock\.yaml)$' || true)
+                  [ -z "$unexpected" ] || {
+                    echo "install touched files beyond the dependency bump:"
+                    echo "$unexpected"
+                    echo "the lockfile has drifted from develop - update it there first"
+                    exit 1
+                  }
+                  git diff --stat
+
+            - name: Open the pull request
+              if: steps.bump.outputs.changed == 'true'
+              env:
+                  GH_TOKEN: ${{ steps.vault.outputs.token }}
+                  # Named explicitly rather than inferred from the remote, whose
+                  # URL carries the token.
+                  GH_REPO: eledrone/eledrone-web
+                  TAG: ${{ needs.build.outputs.tag }}
+                  SHORT_SHA: ${{ needs.build.outputs.short_sha }}
+                  URL: ${{ steps.bump.outputs.url }}
+                  SOURCE_SHA: ${{ github.sha }}
+              run: |
+                  set -euo pipefail
+                  cd web
+                  branch="widget/${TAG}"
+
+                  git config user.name "eledrone-call CI"
+                  git config user.email "ci@eledrone.invalid"
+                  git checkout -b "$branch"
+                  git commit -am "build: element-call widget ${SHORT_SHA}
+
+                  Built from eledrone-call@${SOURCE_SHA}."
+
+                  # One branch per widget, so a re-run of the same commit updates
+                  # its own PR instead of opening a second one.
+                  git push --force-with-lease -u origin "$branch"
+
+                  # An existing PR for this branch is left alone: the push above
+                  # has already updated it.
+                  if [ -n "$(gh pr list --head "$branch" --state open --json number --jq '.[].number')" ]; then
+                    echo "PR for $branch already open - updated it"
+                    exit 0
+                  fi
+
+                  gh pr create --base develop --head "$branch" \
+                    --title "build: element-call widget ${SHORT_SHA}" \
+                    --body "Ships the Element Call widget built from [eledrone-call@\`${SHORT_SHA}\`](https://github.com/${GITHUB_REPOSITORY}/commit/${SOURCE_SHA}).
+
+                  Tarball: <${URL}>
+
+                  Opened automatically by eledrone-call's \`eledrone call embedded\` workflow. Merging is a judgement call: this is the widget that runs inside the desktop and web apps, so give the call UI a try on the preview before landing it."
+
+            - name: Scrub the checkout, which holds the token in its remote URL
+              if: always()
+              run: rm -rf web secrets.json
