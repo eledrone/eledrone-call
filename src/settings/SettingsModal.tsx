@@ -17,6 +17,7 @@ import { type Tab, TabContainer } from "../tabs/Tabs";
 import { ProfileSettingsTab } from "./ProfileSettingsTab";
 import { FeedbackSettingsTab } from "./FeedbackSettingsTab";
 import { iosDeviceMenu$ } from "../state/MediaDevices";
+import { maxVolume } from "../state/VolumeControls";
 import { useMediaDevices } from "../MediaDevicesContext";
 import { widget } from "../widget";
 import {
@@ -166,7 +167,7 @@ export const SettingsModal: FC<Props> = ({
               onValueChange={setSoundVolumeRaw}
               onValueCommit={setSoundVolume}
               min={0}
-              max={1}
+              max={maxVolume}
               step={0.01}
             />
           </div>

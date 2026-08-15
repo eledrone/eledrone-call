@@ -49,6 +49,7 @@ import { type RemoteUserMediaViewModel } from "../state/media/RemoteUserMediaVie
 import { type UserMediaViewModel } from "../state/media/UserMediaViewModel";
 import { type ScreenShareViewModel } from "../state/media/ScreenShareViewModel";
 import { type RemoteScreenShareViewModel } from "../state/media/RemoteScreenShareViewModel";
+import { maxVolume } from "../state/VolumeControls";
 import { type MediaViewModel } from "../state/media/MediaViewModel";
 import { Slider } from "../Slider";
 import { platform } from "../Platform";
@@ -377,7 +378,7 @@ const ScreenShareVolumeButton: FC<ScreenShareVolumeButtonProps> = ({ vm }) => {
             label={t("video_tile.volume")}
             value={playbackVolume}
             min={0}
-            max={1}
+            max={maxVolume}
             step={0.01}
             onValueChange={onVolumeChange}
             onValueCommit={onVolumeCommit}
