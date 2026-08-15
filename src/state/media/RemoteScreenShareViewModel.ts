@@ -16,7 +16,8 @@ import {
   createBaseScreenShare,
 } from "./ScreenShareViewModel";
 import { type ObservableScope } from "../ObservableScope";
-import { createVolumeControls, type VolumeControls } from "../VolumeControls";
+import { type VolumeControls } from "../VolumeControls";
+import { createRemoteVolumeControls } from "./RemoteVolumeControls";
 import { observeTrackReference$ } from "../observeTrackReference";
 
 export interface RemoteScreenShareViewModel
@@ -43,16 +44,11 @@ export function createRemoteScreenShare(
 ): RemoteScreenShareViewModel {
   return {
     ...createBaseScreenShare(scope, inputs),
-    ...createVolumeControls(scope, {
+    ...createRemoteVolumeControls(scope, {
+      participant$: inputs.participant$,
       pretendToBeDisconnected$,
-      sink$: scope.behavior(
-        inputs.participant$.pipe(
-          map(
-            (p) => (volume) =>
-              p?.setVolume(volume, Track.Source.ScreenShareAudio),
-          ),
-        ),
-      ),
+      kind: "screen-share",
+      userId: inputs.userId,
     }),
     local: false,
     videoEnabled$: scope.behavior(

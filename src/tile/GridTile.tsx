@@ -50,6 +50,7 @@ import { useBehavior } from "../useBehavior";
 import { type LocalUserMediaViewModel } from "../state/media/LocalUserMediaViewModel";
 import { type RemoteUserMediaViewModel } from "../state/media/RemoteUserMediaViewModel";
 import { type UserMediaViewModel } from "../state/media/UserMediaViewModel";
+import { maxVolume } from "../state/VolumeControls";
 import { type RingingMediaViewModel } from "../state/media/RingingMediaViewModel";
 import { RingingStatus } from "./RingingStatus";
 
@@ -373,7 +374,7 @@ const RemoteUserMediaTile: FC<RemoteUserMediaTileProps> = ({
               onValueChange={vm.adjustPlaybackVolume}
               onValueCommit={vm.commitPlaybackVolume}
               min={0}
-              max={1}
+              max={maxVolume}
               step={0.01}
             />
           </MenuItem>

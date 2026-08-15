@@ -19,6 +19,7 @@ import {
 } from "livekit-client";
 import { type ReactNode } from "react";
 import { useTracks } from "@livekit/components-react";
+import { of } from "rxjs";
 
 import { testAudioContext } from "../useAudioContext.test";
 import * as MediaDevicesContext from "../MediaDevicesContext";
@@ -27,7 +28,9 @@ import {
   mockMediaDevices,
   mockRemoteParticipant,
   mockTrack,
+  testScope,
 } from "../utils/test";
+import { audioMixKey, canAmplify$, requestVolume } from "../state/AudioMix";
 import { initializeWidget } from "../widget";
 initializeWidget();
 export const TestAudioContextConstructor = vi.fn(
@@ -44,9 +47,11 @@ beforeEach(() => {
   vi.stubGlobal("AudioContext", TestAudioContextConstructor);
 });
 
+const amplifies = canAmplify$.value;
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.clearAllMocks();
+  canAmplify$.next(amplifies);
 });
 
 vi.mock("@livekit/components-react", async (importOriginal) => {
@@ -268,6 +273,30 @@ it("should not setup audioContext gain and pan if there is no need to.", () => {
   expect(audioTrack.setWebAudioPlugins).toHaveBeenCalledWith([]);
 
   expect(testAudioContext.gain.gain.value).toEqual(1);
+  expect(testAudioContext.pan.pan.value).toEqual(0);
+});
+
+it("should play a participant turned up beyond 100% through the audio context", () => {
+  canAmplify$.next(true);
+  requestVolume(
+    testScope(),
+    of({
+      key: audioMixKey("@bob:DEV0", Track.Source.Microphone),
+      volume: 1.5,
+    }),
+  );
+
+  renderTestComponent([{ userId: "@bob", deviceId: "DEV0" }], ["@bob:DEV0"]);
+
+  // A media element will not play above 100%, so this track needs the context
+  // even though the earpiece does not
+  const audioTrack = tracks[0].publication.track! as RemoteAudioTrack;
+  expect(audioTrack.setAudioContext).toHaveBeenCalledWith(testAudioContext);
+  expect(audioTrack.setWebAudioPlugins).toHaveBeenCalledWith([
+    testAudioContext.gain,
+    testAudioContext.pan,
+  ]);
+  expect(testAudioContext.gain.gain.value).toEqual(1.5);
   expect(testAudioContext.pan.pan.value).toEqual(0);
 });
 
